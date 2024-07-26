@@ -1,3 +1,5 @@
+import logger from "./logger.js";
+
 class ApiError extends Error {
   constructor(
     statusCode,
@@ -6,16 +8,20 @@ class ApiError extends Error {
     stack = ""
   ) {
     super(message);
-    this.statusCode = statusCode;
-    this.message = message;
+    this.statusCode = Number(statusCode);
+    this.message = String(message);
     this.success = false;
-    this.errors = errors;
+    this.errors = Array.isArray(errors) ? errors : [errors];
 
     if (stack) {
       this.stack = stack;
     } else {
       Error.captureStackTrace(this, this.constructor);
     }
+    logger.error(`ApiError: ${this.message}`, {
+      statusCode: this.statusCode,
+      errors: this.errors,
+    });
   }
 
   toApiResponse() {
@@ -29,18 +35,3 @@ class ApiError extends Error {
 }
 
 export default ApiError;
-
-export const errorHandler = (err, req, res, next) => {
-  if (err instanceof ApiError) {
-    const apiResponse = err.toApiResponse();
-    return res.status(apiResponse.statusCode).json(apiResponse);
-  }
-
-  // Handle other types of errors (e.g., 500 Internal Server Error)
-  return res.status(500).json({
-    statusCode: 500,
-    message: "Internal Server Error",
-    success: false,
-    errors: [err.message],
-  });
-};

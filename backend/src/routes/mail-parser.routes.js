@@ -1,8 +1,12 @@
 import { Router } from "express";
-import { attachmentMailParser } from "../controllers/attachment-mail-parser.controllers.js";
+import {
+  attachmentMailParser,
+  healthCheck,
+} from "../controllers/attachment-mail-parser.controllers.js";
 
 const emailRouter = Router();
 
-emailRouter.route("/attachment").get(attachmentMailParser);
+emailRouter.get("/attachment", attachmentMailParser);
+emailRouter.get("/health", healthCheck);
 
 export default emailRouter;

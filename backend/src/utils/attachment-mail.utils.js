@@ -1,134 +1,10 @@
 import { ImapFlow } from "imapflow";
 import { config } from "../configs/config.js";
-import { simpleParser } from "mailparser";
+import logger from "./logger.js";
 import ApiError from "./api-error.js";
+import { handleNewEmail } from "./handle-new-email.utils.js";
 
-// Function to connect to the mailbox using Ethereal SMTP server details.
-export const connectToMailbox = async () => {
-  const client = new ImapFlow({
-    host: config.IMAP_HOST,
-    port: config.IMAP_PORT,
-    secure: true,
-    auth: {
-      user: config.IMAP_USER,
-      pass: config.IMAP_PASSWORD,
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
-    clientInfo: {
-      name: false,
-      "support-url": false,
-      vendor: false,
-      date: false,
-    },
-  });
-
-  client.on("error", (err) => {
-    client.log.error(err);
-  });
-  client.on("close", (...args) => {
-    console.log("CLOSE");
-    console.log("args", ...args);
-  });
-
-  client.on("mailboxOpen", (...args) => {
-    console.log("MAILBOX:OPEN");
-    console.log("args", ...args);
-  });
-
-  client.on("mailboxClose", (...args) => {
-    console.log("MAILBOX:CLOSE");
-    console.log("args", ...args);
-  });
-
-  client.on("flags", (updateEvent) => {
-    console.log("FLAGS UPDATE");
-    console.log(util.inspect(updateEvent, false, 22));
-  });
-
-  client.on("exists", (updateEvent) => {
-    console.log("EXISTS UPDATE");
-    console.log(util.inspect(updateEvent, false, 22));
-  });
-
-  client.on("expunge", (updateEvent) => {
-    console.log("EXPUNGE UPDATE");
-    console.log(util.inspect(updateEvent, false, 22));
-  });
-
-  await client.connect(); // Connect to the mailbox
-  return client;
-};
-
-export async function fetchLastEmail(connection) {
-  let message = await connection.fetchOne("*", {
-    // envelope: true,
-    // flags: true,
-    source: true,
-  });
-
-  if (!message) {
-    return {
-      message: "Either there is no message or has been deleted",
-      success: false,
-    };
-  }
-
-  const emailBodyBuffer = Buffer.from(message.source);
-  const {
-    text: emailBody,
-    subject,
-    date,
-    headers,
-  } = await simpleParser(emailBodyBuffer);
-  const from = headers.get("from").value[0].address;
-
-  if (!emailBody) {
-    return {
-      message: "Either there is no message or has been deleted",
-      success: false,
-    };
-  }
-
-  // Remove "Fw: " from the start of the subject if it exists
-  const cleanedSubject = subject.startsWith("Fw: ")
-    ? subject.slice(4).trim()
-    : subject;
-
-  // Extract ticket IDs
-  const ticketIds = [];
-  const ticketIdMatches = cleanedSubject.match(/#(\w+)/g);
-  if (ticketIdMatches) {
-    for (const match of ticketIdMatches) {
-      ticketIds.push(match.slice(1)); // Remove the "#" and store the ticket ID
-    }
-  }
-  // Clean up the emailBody
-  let cleanedEmailBody = emailBody
-    .replace(/----- Original message -----/g, "") // Remove original message header
-    .replace(/>\s*/g, "") // Remove "> " from the start of each line
-    .replace(/\n{2,}/g, "\n\n") // Replace multiple newlines with a single newline
-    .replace(/From:\s*/g, "From: ") // Ensure "From:" is formatted correctly
-    .replace(/To:\s*/g, "\nTo: ") // Ensure "To:" is formatted correctly
-    .replace(/Cc:\s*/g, "Cc: ") // Ensure "Cc:" is formatted correctly
-    .replace(/Subject:\s*/g, "\nSubject: ") // Ensure "Subject:" is formatted correctly
-    .replace(/Date:\s*/g, "\nDate: ") // Ensure "Date:" is formatted correctly
-    .replace(/(Date: .*)/g, "$1\n") // Add an empty line after "Date:"
-    .replace(/(?:\r\n|\r|\n)/g, "\n") // Normalize newlines
-    .trim(); // Trim leading and trailing spaces
-
-  return {
-    emailBody: cleanedEmailBody,
-    subject: cleanedSubject,
-    date,
-    from,
-    ticketIds,
-    success: true,
-  };
-}
-
-export const checkStatusOfTicket = async (ticketId, emailBody) => {
+export const checkStatusAndUpdateJournal = async (ticketId, emailBody) => {
   const queryStatusCheck = `IncidentID="${ticketId}" and not (StatusIM="Resolved" or StatusIM="Closed")`;
   const encodedQueryStatusCheck = encodeURIComponent(queryStatusCheck);
 
@@ -151,7 +27,7 @@ export const checkStatusOfTicket = async (ticketId, emailBody) => {
       headers,
     });
 
-    if (resStatusCheck.status !== 200) {
+    if (!resStatusCheck.ok) {
       throw new ApiError(
         resStatusCheck.status,
         `Error fetching data from HPSM: ${resStatusCheck.statusText}`
@@ -172,7 +48,7 @@ export const checkStatusOfTicket = async (ticketId, emailBody) => {
 
     const body = {
       Incident: {
-        JournalUpdates: emailBody,
+        JournalUpdates: emailBody, //FIXME: Stringify emailBody before sending to HPSM
       },
     };
 
@@ -183,7 +59,7 @@ export const checkStatusOfTicket = async (ticketId, emailBody) => {
       // redirect: "follow",
     });
 
-    if (resUpdateJournal.status !== 200) {
+    if (!resUpdateJournal.ok) {
       throw new ApiError(
         resUpdateJournal.status,
         `Error fetching data from HPSM: ${resUpdateJournal.statusText}`
@@ -204,11 +80,119 @@ export const checkStatusOfTicket = async (ticketId, emailBody) => {
   }
 };
 
-export async function deleteAll(path) {
-  let lock = await client.getMailboxLock(path);
-  try {
-    await client.messageDelete("1:*");
-  } finally {
-    lock.release();
+class EmailListener {
+  constructor() {
+    this.client = null;
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectInterval = 1 * 60 * 1000; // 1 minute in milliseconds
+    this.idleRestartInterval = 5 * 60 * 1000; // 5 minutes in milliseconds}
+    this.pollInterval = 1 * 60 * 1000; // 3 minutes in milliseconds}
+  }
+
+  async connect() {
+    this.client = new ImapFlow({
+      host: config.IMAP_HOST,
+      port: config.IMAP_PORT,
+      secure: true,
+      auth: {
+        user: config.IMAP_USER,
+        pass: config.IMAP_PASSWORD,
+      },
+      tls: { rejectUnauthorized: false },
+      logger: console,
+    });
+
+    try {
+      await this.client.connect();
+      this.isConnected = true;
+      this.reconnectAttempts = 0;
+      logger.info("Connected to mailbox");
+      this.setupEventListeners();
+      this.startIdleMode();
+      // Start polling for new emails every 3 minutes
+      this.startPolling();
+    } catch (error) {
+      console.error("Failed to connect:", error);
+      this.handleReconnect();
+    }
+  }
+
+  startPolling() {
+    setInterval(async () => {
+      console.log("Polling for new emails...");
+      await this.handleNewMail();
+    }, this.pollInterval);
+  }
+
+  setupEventListeners() {
+    console.log("Setting up event listeners...");
+    this.client.on("exists", this.handleNewMail.bind(this));
+    this.client.on("mail", this.handleNewMail.bind(this));
+    this.client.on("error", this.handleError.bind(this));
+    this.client.on("close", this.handleClose.bind(this));
+  }
+
+  async handleNewMail() {
+    logger.info("New mail event detected");
+    if (this.isConnected) {
+      try {
+        await handleNewEmail(this.client);
+      } catch (error) {
+        console.error("Error handling new email:", error);
+      }
+    }
+  }
+
+  handleError(error) {
+    logger.error("IMAP client error:", {
+      error: error.message,
+      stack: error.stack,
+    });
+    this.isConnected = false;
+    this.handleReconnect();
+  }
+
+  handleClose() {
+    logger.info("IMAP connection closed");
+    this.isConnected = false;
+    this.handleReconnect();
+  }
+
+  async startIdleMode() {
+    console.log("Starting IDLE mode...");
+    while (this.isConnected) {
+      try {
+        await this.client.idle();
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.idleRestartInterval)
+        );
+      } catch (error) {
+        console.error("Error in IDLE mode:", error);
+        break;
+      }
+    }
+  }
+
+  handleReconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      logger.info(
+        `Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`
+      );
+      setTimeout(() => this.connect(), this.reconnectInterval);
+    } else {
+      logger.error(
+        "Max reconnection attempts reached. Please check the connection manually."
+      );
+    }
   }
 }
+
+export const startEmailListener = async () => {
+  console.log("Starting email listener...");
+  const listener = new EmailListener();
+  await listener.connect();
+  await listener.handleNewMail();
+};
