@@ -30,7 +30,6 @@
     "imapflow": "^1.0.164",
     "mailparser": "^3.7.1",
     "mongoose": "^8.5.1",
-    "node-cron": "^3.0.3",
     "node-fetch": "^3.3.2",
     "nodemailer": "^6.9.14",
     "winston": "^3.13.1"
