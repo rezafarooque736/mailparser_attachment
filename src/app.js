@@ -50,9 +50,7 @@ app.use((err, req, res, next) => {
 // Start email listener
 const initializeApp = async () => {
   try {
-    logger.info("Email listener started successfully1");
     await startEmailListener();
-    logger.info("Email listener started successfully2");
   } catch (error) {
     logger.error("Failed to start email listener:", error);
   }

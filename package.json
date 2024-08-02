@@ -26,6 +26,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
+    "html-to-text": "^9.0.5",
     "imapflow": "^1.0.164",
     "mailparser": "^3.7.1",
     "mongoose": "^8.5.1",

@@ -4,7 +4,7 @@ import logger from "./logger.js";
 import ApiError from "./api-error.js";
 import { handleNewEmail } from "./handle-new-email.utils.js";
 
-export const checkStatusAndUpdateJournal = async (ticketId, emailBody) => {
+export const isHPSMticketValid = async (ticketId) => {
   const queryStatusCheck = `IncidentID="${ticketId}" and not (StatusIM="Resolved" or StatusIM="Closed")`;
   const encodedQueryStatusCheck = encodeURIComponent(queryStatusCheck);
 
@@ -43,12 +43,36 @@ export const checkStatusAndUpdateJournal = async (ticketId, emailBody) => {
       };
     }
 
+    return {
+      message: "Ticket is open",
+      success: true,
+    };
+  } catch (error) {
+    return {
+      message: `Error getting sttaus of ticket id: ${error.message || error}`,
+      success: false,
+    };
+  }
+};
+
+export const updateHPSMJournal = async (ticketId, emailBody) => {
+  // Create a base64 encoded string for Basic Auth
+  const auth = Buffer.from(
+    `${config.HPSM_USERNAME}:${config.HPSM_PASSWORD}`
+  ).toString("base64");
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Basic ${auth}`,
+  };
+
+  try {
     // send emailBody to HPSM to update journal of the ticket.
     const updateJournalUrl = `http://${config.HPSM_HOST}:${config.HPSM_PORT}/SM/9/rest/incidents/${ticketId}`;
 
     const body = {
       Incident: {
-        JournalUpdates: emailBody, //FIXME: Stringify emailBody before sending to HPSM
+        JournalUpdates: emailBody,
       },
     };
 
@@ -74,7 +98,7 @@ export const checkStatusAndUpdateJournal = async (ticketId, emailBody) => {
     console.log("Error:", error);
     // Handle network errors, server errors, and unexpected errors.
     return {
-      message,
+      message: `Error updating ticket: ${error.message || error}`,
       success: false,
     };
   }
@@ -88,7 +112,7 @@ class EmailListener {
     this.maxReconnectAttempts = 5;
     this.reconnectInterval = 1 * 60 * 1000; // 1 minute in milliseconds
     this.idleRestartInterval = 5 * 60 * 1000; // 5 minutes in milliseconds}
-    this.pollInterval = 1 * 60 * 1000; // 3 minutes in milliseconds}
+    this.pollInterval = 1 * 60 * 1000; // 1 minutes in milliseconds}
   }
 
   async connect() {
@@ -110,32 +134,27 @@ class EmailListener {
       this.reconnectAttempts = 0;
       logger.info("Connected to mailbox");
       this.setupEventListeners();
-      this.startIdleMode();
-      // Start polling for new emails every 3 minutes
-      this.startPolling();
+      // Start polling for new emails every 1 minutes
+      // this.startPolling();
     } catch (error) {
       console.error("Failed to connect:", error);
       this.handleReconnect();
     }
   }
 
-  startPolling() {
-    setInterval(async () => {
-      console.log("Polling for new emails...");
-      await this.handleNewMail();
-    }, this.pollInterval);
-  }
+  // startPolling() {
+  //   setInterval(async () => {
+  //     console.log("Polling for new emails...");
+  //     await this.handleNewMail();
+  //   }, this.pollInterval);
+  // }
 
   setupEventListeners() {
-    console.log("Setting up event listeners...");
-    this.client.on("exists", this.handleNewMail.bind(this));
-    this.client.on("mail", this.handleNewMail.bind(this));
-    this.client.on("error", this.handleError.bind(this));
-    this.client.on("close", this.handleClose.bind(this));
+    this.client.on("exists", this.handleNewMail.call(this));
+    this.client.on("error", this.handleError.call(this));
   }
 
   async handleNewMail() {
-    logger.info("New mail event detected");
     if (this.isConnected) {
       try {
         await handleNewEmail(this.client);
@@ -152,27 +171,6 @@ class EmailListener {
     });
     this.isConnected = false;
     this.handleReconnect();
-  }
-
-  handleClose() {
-    logger.info("IMAP connection closed");
-    this.isConnected = false;
-    this.handleReconnect();
-  }
-
-  async startIdleMode() {
-    console.log("Starting IDLE mode...");
-    while (this.isConnected) {
-      try {
-        await this.client.idle();
-        await new Promise((resolve) =>
-          setTimeout(resolve, this.idleRestartInterval)
-        );
-      } catch (error) {
-        console.error("Error in IDLE mode:", error);
-        break;
-      }
-    }
   }
 
   handleReconnect() {
@@ -194,5 +192,5 @@ export const startEmailListener = async () => {
   console.log("Starting email listener...");
   const listener = new EmailListener();
   await listener.connect();
-  await listener.handleNewMail();
+  // await listener.handleNewMail();
 };

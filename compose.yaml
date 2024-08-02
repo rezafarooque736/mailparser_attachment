@@ -1,0 +1,10 @@
+services:
+  backend:
+    image: backend
+    container_name: backend-nodejs-mailparser-attachment
+    restart: always
+    ports:
+      - 8001:8001
+    build: .
+    environment:
+      TZ: Asia/Kolkata
